@@ -1,0 +1,122 @@
+#!/bin/sh
+
+# snap-clone v0.1.0
+# Copyright 2025, Matyalatte.
+# Distributed under the terms of the MIT License.
+
+# About:
+#   snap-clone is a tiny script to download snapshots of git repositories.
+#   It downloads and extracts archives of git repositories by using curl and tar.
+#   Currently, it only works for public github (or gitlab) repositories.
+
+# Usage:
+#   snap-clone <https-url> [ref]
+# Example:
+#   snap-clone https://github.com/user/repo          # clones default branch
+#   snap-clone https://gitlab.com/user/repo main     # clones branch
+#   snap-clone https://github.com/user/repo v1.0.0   # clones tag
+#   snap-clone https://gitlab.com/user/repo <sha>    # clones commit
+#   snap-clone https://gitlab.gnome.org/user/repo    # clones from a gitlab instance
+#   snap-clone https://gitlab.com/user/repo.git      # .git also works
+
+# Installation:
+#   sudo apt install curl tar
+#   sudo curl -L https://raw.githubusercontent.com/matyalatte/snap-clone/main/snap-clone -o /usr/local/bin/snap-clone
+#   sudo chmod +x /usr/local/bin/snap-clone
+
+REPO_URL="$1"
+REF="$2"
+
+# Requires a URL
+if [ -z "$REPO_URL" ]; then
+  echo "Usage: snap-clone <https-url> [ref]"
+  exit 1
+fi
+
+# Check requirements
+for cmd in curl mktemp tar; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Error: snap-clone requires $cmd"
+    exit 1
+  fi
+done
+
+# Identify host (github.com, gitlab.gnome.org, etc.)
+HOST=$(echo "$REPO_URL" | sed -n 's|https://\([^/]*\)/.*|\1|p')
+case "$HOST" in
+  github.com) ;;
+  gitlab.*) ;;
+  *)
+    echo "Error: Unsupported host: $HOST"
+    echo "Only GitHub and GitLab HTTPS URLs are supported."
+    exit 1
+    ;;
+esac
+
+# Extract user/repo from URL
+REPO_PATH=$(echo "$REPO_URL" | sed -e "s|https://${HOST}/||" -e 's|\.git$||')
+case "$REPO_PATH" in
+  */*) ;;
+  *)
+    echo "Error: Invalid git URL: $REPO_URL"
+    exit 1
+    ;;
+esac
+
+# Fetch default branch if no ref is provided
+if [ -z "$REF" ]; then
+  case "$HOST" in
+    github.com)
+      API_URL="https://api.github.com/repos/$REPO_PATH"
+      ;;
+    gitlab.*)
+      ENCODED_PATH=$(echo "$REPO_PATH" | sed 's|/|%2F|g')
+      API_URL="https://$HOST/api/v4/projects/$ENCODED_PATH"
+      ;;
+  esac
+  REF=$(curl -s "$API_URL" | sed -n 's/.*"default_branch": *"\([^"]*\)".*/\1/p')
+  echo "Default branch is: $REF"
+fi
+
+DEST_DIR=$(basename "$REPO_PATH")
+if [ -e "$DEST_DIR" ]; then
+  echo "Error: Destination '$DEST_DIR' already exists."
+  exit 1
+fi
+
+ZIP_EXT=tar.gz
+ZIP_FILE="./$(basename "$REPO_PATH")-$REF.$ZIP_EXT"
+if [ -e "$DEST_DIR" ]; then
+  echo "Error: Archive path '$ZIP_FILE' already exists"
+  exit 1
+fi
+
+# Helper function to try downloading and extracting
+try_download_and_extract() {
+  label="$1"
+  url="$2"
+
+  if curl -sL -f "$url" -o "$ZIP_FILE"; then
+    echo "tarping $(basename "$ZIP_FILE")..."
+    mkdir -p "$DEST_DIR"
+    tar -xzf "$ZIP_FILE" --strip-components=1 -C "$DEST_DIR"
+    rm -f "$ZIP_FILE"
+    echo "Cloned $label '$REF'"
+    exit 0
+  fi
+}
+
+# Download archives
+case "$HOST" in
+  github.com)
+    try_download_and_extract "branch" "https://github.com/$REPO_PATH/archive/refs/heads/$REF.$ZIP_EXT"
+    try_download_and_extract "tag"    "https://github.com/$REPO_PATH/archive/refs/tags/$REF.$ZIP_EXT"
+    try_download_and_extract "commit" "https://github.com/$REPO_PATH/archive/$REF.$ZIP_EXT"
+    ;;
+  gitlab.*)
+    try_download_and_extract "ref" "https://$HOST/$REPO_PATH/-/archive/$REF/$(basename "$REPO_PATH")-$REF.$ZIP_EXT"
+    ;;
+esac
+
+echo "Error: Failed to download ref: $REF"
+exit 1
