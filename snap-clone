@@ -34,7 +34,7 @@ if [ -z "$REPO_URL" ]; then
 fi
 
 # Check requirements
-for cmd in curl mktemp tar; do
+for cmd in curl tar; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Error: snap-clone requires $cmd"
     exit 1
